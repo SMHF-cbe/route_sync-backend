@@ -1,0 +1,12 @@
+python-dotenv
+eval-type-backport
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pandas
+openpyxl
+pydantic
+python-multipart
+fpdf2
+bcrypt

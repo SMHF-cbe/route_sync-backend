@@ -1,0 +1,18 @@
+venv/
+__pycache__/
+*.pyc
+.env
+*.db
+*.pdf
+.expo/
+
+# Uploaded media (keep the folder via .gitkeep)
+uploads/*
+!uploads/.gitkeep
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
