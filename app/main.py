@@ -49,13 +49,15 @@ def _ensure_entry_columns() -> None:
     if "entries" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("entries")}
+    is_sqlite = str(engine.url).startswith("sqlite")
+    ts_type = "DATETIME" if is_sqlite else "TIMESTAMP"
     with engine.begin() as conn:
         if "collected_cash" not in cols:
             conn.execute(text("ALTER TABLE entries ADD COLUMN collected_cash FLOAT DEFAULT 0"))
         if "collected_upi" not in cols:
             conn.execute(text("ALTER TABLE entries ADD COLUMN collected_upi FLOAT DEFAULT 0"))
         if "updated_at" not in cols:
-            conn.execute(text("ALTER TABLE entries ADD COLUMN updated_at DATETIME"))
+            conn.execute(text(f"ALTER TABLE entries ADD COLUMN updated_at {ts_type}"))
     db = SessionLocal()
     try:
         for e in db.query(Entry).all():
