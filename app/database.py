@@ -9,10 +9,9 @@ from sqlalchemy import create_engine
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "sqlite:///./routesync.db",
-)
+# Treat unset or blank DATABASE_URL as missing (empty env var would otherwise crash create_engine).
+_raw_db = (os.environ.get("DATABASE_URL") or "").strip()
+DATABASE_URL = _raw_db or "sqlite:///./routesync.db"
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(
