@@ -7,6 +7,11 @@ from .database import Base
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def business_today() -> date:
+    """Calendar date in IST — daily turnover at midnight India time (not server UTC)."""
+    return datetime.now(IST).date()
+
+
 class Route(Base):
     __tablename__ = "routes"
 
@@ -51,7 +56,7 @@ class Entry(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    date = Column(Date, default=date.today)
+    date = Column(Date, default=business_today)
     created_at = Column(DateTime, default=lambda: datetime.now(IST).replace(tzinfo=None))
     updated_at = Column(DateTime, nullable=True)
 
