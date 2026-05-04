@@ -21,7 +21,7 @@ import pandas as pd
 from fpdf import FPDF
 
 from .database import Base, engine, SessionLocal
-from .models import Store, Entry, Route, EntryAuditLog
+from .models import Store, Entry, Route, EntryAuditLog, business_today, IST as _IST
 from .auth import hash_password, verify_password, admin_secret_ok
 
 Base.metadata.create_all(bind=engine)
@@ -204,7 +204,6 @@ def admin_verify(body: AdminVerifyBody):
 
 
 # ---------------- EDIT WINDOW & AUDIT ----------------
-from .models import IST as _IST
 
 _EDIT_WINDOW_MINUTES = 15
 
@@ -588,7 +587,7 @@ def get_stores(
     include_inactive: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    today = date.today()
+    today = business_today()
 
     q = db.query(Store).filter(Store.route_id == route_id)
     if not include_inactive:
@@ -1026,7 +1025,7 @@ def _today_entry_json(e: Entry) -> dict:
 
 @app.get("/entries/today/{store_id}")
 def get_today_entries(store_id: int, db: Session = Depends(get_db)):
-    today = date.today()
+    today = business_today()
     rows = (
         db.query(Entry)
         .filter(Entry.store_id == store_id, Entry.date == today)
@@ -1049,7 +1048,7 @@ def create_entry(entry: EntryCreate, db: Session = Depends(get_db)):
     if store.is_active is False:
         raise HTTPException(400, "This store is inactive. Activate it before adding entries.")
 
-    today = date.today()
+    today = business_today()
 
     if entry.entry_id is not None and entry.is_closed:
         raise HTTPException(400, "Do not send entry_id when marking closed.")
@@ -1458,7 +1457,7 @@ def report_today(
     route_id: int = Query(..., description="Logged-in route only"),
     db: Session = Depends(get_db),
 ):
-    today = date.today()
+    today = business_today()
     q = db.query(Entry).filter(Entry.date == today, Entry.route_id == route_id)
     entries = q.all()
 
@@ -1504,11 +1503,11 @@ def report_today_pdf(
 
     route = db.query(Route).filter(Route.id == route_id).first()
     if route and route.route_code is not None:
-        report_title = f"Route {route.route_code} - {route.name} daily report - {_report_pdf_date(date.today())}"
+        report_title = f"Route {route.route_code} - {route.name} daily report - {_report_pdf_date(business_today())}"
     elif route:
-        report_title = f"{route.name} daily report - {_report_pdf_date(date.today())}"
+        report_title = f"{route.name} daily report - {_report_pdf_date(business_today())}"
     else:
-        report_title = f"Route (id {route_id}) daily report - {_report_pdf_date(date.today())}"
+        report_title = f"Route (id {route_id}) daily report - {_report_pdf_date(business_today())}"
 
     ts = int(summary["total_sold"])
     cash = float(summary["cash"])
@@ -1838,7 +1837,7 @@ def snapshot(store_id: int, db: Session = Depends(get_db)):
     store_ob = float(getattr(s, "opening_balance", None) or 0)
     outstanding = store_ob + sum(_entry_balance_due(e) for e in entries)
 
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = business_today() - timedelta(days=1)
 
     y_entries = db.query(Entry).filter(
         Entry.store_id == store_id,
