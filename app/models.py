@@ -35,12 +35,15 @@ class Store(Base):
 
     is_active = Column(Boolean, default=True)
 
+    sort_order = Column(Integer, default=0)
+
     # Offers
     offer_type = Column(String, default="none")
     offer_buy = Column(Integer, default=0)
     offer_get = Column(Integer, default=0)
     offer_min_qty = Column(Integer, default=0)
     bundle_price = Column(Float, default=0)
+    
 
     # Info
     photo_url = Column(String)
