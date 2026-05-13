@@ -42,6 +42,8 @@ def _ensure_store_columns() -> None:
         if "opening_balance" not in cols:
             ob_type = "REAL DEFAULT 0" if is_sqlite else "DOUBLE PRECISION DEFAULT 0"
             conn.execute(text(f"ALTER TABLE stores ADD COLUMN opening_balance {ob_type}"))
+        if "sort_order" not in cols:
+            conn.execute(text("ALTER TABLE stores ADD COLUMN sort_order INTEGER DEFAULT 0"))
 
 
 def _ensure_entry_columns() -> None:
@@ -497,6 +499,15 @@ class StoreUpdate(BaseModel):
     bundle_price: float | None = None
     opening_balance: float | None = None
 
+class StoreReorderItem(BaseModel):
+    id: int
+    sort_order: int
+
+
+class StoreReorderBody(BaseModel):
+    stores: list[StoreReorderItem]
+
+
 
 def _validate_store_offers(
     offer_type: str,
@@ -592,7 +603,7 @@ def get_stores(
     q = db.query(Store).filter(Store.route_id == route_id)
     if not include_inactive:
         q = q.filter(or_(Store.is_active == True, Store.is_active.is_(None)))
-    stores = q.order_by(Store.id.asc()).all()
+    stores = q.order_by(Store.sort_order.asc(), Store.id.asc()).all()
 
     store_ids = [s.id for s in stores]
     entries_by_store: dict[int, list[Entry]] = defaultdict(list)
@@ -621,6 +632,7 @@ def get_stores(
             "entered_today": s.id in entered_today_ids,
             "is_active": True if s.is_active is None else bool(s.is_active),
             "outstanding": round(outstanding, 2),
+            "sort_order": int(getattr(s, "sort_order", 0) or 0),
         })
 
     return result
@@ -672,6 +684,34 @@ def patch_store(store_id: int, body: StoreUpdate, db: Session = Depends(get_db))
         "route_id": s.route_id,
         "opening_balance": round(float(getattr(s, "opening_balance", None) or 0), 2),
     }
+
+
+@app.patch("/admin/stores/reorder")
+def admin_reorder_stores(
+    body: StoreReorderBody,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _require_admin(request, None)
+
+    if not body.stores:
+        return {"ok": True, "updated": 0}
+
+    ids = [int(item.id) for item in body.stores]
+    rows = db.query(Store).filter(Store.id.in_(ids)).all()
+    store_map = {int(s.id): s for s in rows}
+
+    updated = 0
+    for item in body.stores:
+        s = store_map.get(int(item.id))
+        if not s:
+            continue
+        s.sort_order = int(item.sort_order)
+        updated += 1
+
+    db.commit()
+
+    return {"ok": True, "updated": updated}
 
 
 @app.delete("/admin/stores/{store_id}")
