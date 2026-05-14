@@ -205,6 +205,152 @@ def admin_verify(body: AdminVerifyBody):
     return {"ok": True}
 
 
+def _next_business_date(base: date | None = None) -> date:
+    base_date = base or business_today()
+    return base_date + timedelta(days=1)
+
+
+def _entry_net_units(e: Entry) -> int:
+    return int(e.delivered or 0) - int(e.returned or 0)
+
+
+def _safe_round_prediction(value: float) -> int:
+    return max(0, int(round(float(value or 0))))
+
+
+def _daily_net_totals(
+    db: Session,
+    from_date: date,
+    to_date: date,
+    route_id: int | None = None,
+) -> dict[date, int]:
+    q = db.query(Entry).filter(
+        Entry.date >= from_date,
+        Entry.date <= to_date,
+        Entry.is_closed == False,
+    )
+
+    if route_id is not None:
+        q = q.filter(Entry.route_id == route_id)
+
+    totals: dict[date, int] = defaultdict(int)
+    for e in q.all():
+        if e.date is not None:
+            totals[e.date] += _entry_net_units(e)
+
+    return dict(totals)
+
+
+def _average(values: list[int | float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values)) / float(len(values))
+
+
+def _prediction_confidence(
+    same_weekday_count: int,
+    last_7_count: int,
+    last_day_total: int,
+) -> str:
+    if same_weekday_count >= 4 and last_7_count >= 5:
+        return "high"
+    if same_weekday_count >= 2 and last_7_count >= 3:
+        return "medium"
+    if same_weekday_count >= 1 or last_7_count >= 1 or last_day_total > 0:
+        return "low"
+    return "no_data"
+
+
+class AdminSalesPredictionResponse(BaseModel):
+    prediction_date: date
+    prediction_weekday: str
+    route_id: int | None = None
+    predicted_units: int
+    avg_same_weekday: float
+    same_weekday_count: int
+    last_7_days_avg: float
+    last_7_days_count: int
+    last_day_total: int
+    confidence: str
+    formula: str
+
+
+@app.get("/admin/prediction/sales", response_model=AdminSalesPredictionResponse)
+def admin_sales_prediction(
+    request: Request,
+    route_id: int | None = Query(None),
+    history_days: int = Query(90, ge=14, le=365),
+    db: Session = Depends(get_db),
+):
+    _require_admin(request, None)
+
+    today = business_today()
+    prediction_date = _next_business_date(today)
+    prediction_weekday_index = prediction_date.weekday()
+
+    history_start = today - timedelta(days=history_days)
+    history_end = today
+
+    daily_totals = _daily_net_totals(
+        db=db,
+        from_date=history_start,
+        to_date=history_end,
+        route_id=route_id,
+    )
+
+    same_weekday_values: list[int] = []
+    for d, total in daily_totals.items():
+        if d < prediction_date and d.weekday() == prediction_weekday_index:
+            same_weekday_values.append(int(total))
+
+    avg_same_weekday = _average(same_weekday_values)
+
+    last_7_start = today - timedelta(days=6)
+    last_7_values: list[int] = []
+    cursor = last_7_start
+    while cursor <= today:
+        if cursor in daily_totals:
+            last_7_values.append(int(daily_totals[cursor]))
+        cursor += timedelta(days=1)
+
+    last_7_days_avg = _average(last_7_values)
+    last_day_total = int(daily_totals.get(today, 0) or 0)
+
+    if last_day_total == 0 and daily_totals:
+        available_dates = sorted(daily_totals.keys())
+        if available_dates:
+            last_available_date = available_dates[-1]
+            last_day_total = int(daily_totals.get(last_available_date, 0) or 0)
+
+    weighted_prediction = (
+        0.5 * avg_same_weekday
+        + 0.3 * last_7_days_avg
+        + 0.2 * last_day_total
+    )
+
+    predicted_units = _safe_round_prediction(weighted_prediction)
+
+    confidence = _prediction_confidence(
+        same_weekday_count=len(same_weekday_values),
+        last_7_count=len(last_7_values),
+        last_day_total=last_day_total,
+    )
+
+    return {
+        "prediction_date": prediction_date,
+        "prediction_weekday": prediction_date.strftime("%A"),
+        "route_id": route_id,
+        "predicted_units": predicted_units,
+        "avg_same_weekday": round(avg_same_weekday, 2),
+        "same_weekday_count": len(same_weekday_values),
+        "last_7_days_avg": round(last_7_days_avg, 2),
+        "last_7_days_count": len(last_7_values),
+        "last_day_total": last_day_total,
+        "confidence": confidence,
+        "formula": "0.5*avg_same_weekday + 0.3*last_7_days_avg + 0.2*last_day_total",
+    }
+
+
 # ---------------- EDIT WINDOW & AUDIT ----------------
 
 _EDIT_WINDOW_MINUTES = 15
