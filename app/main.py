@@ -2048,120 +2048,13 @@ def snapshot(store_id: int, db: Session = Depends(get_db)):
 
 
 # ---------------- LEDGER ----------------
-@app.get("/ledger/{store_id}")
-def ledger(
-    store_id: int,
-    from_date: str | None = Query(None),
-    to_date: str | None = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Each row combines sales history (packets sold / returned) with money (bill, paid, running due).
-
-    **balance_before** = total owed before this visit line; **running_balance** = after (cumulative).
-    **line_due** = unpaid portion from this visit only. Returns are packet counts only (already in billing logic).
-    """
-    store = db.query(Store).filter(Store.id == store_id).first()
-    if not store:
-        raise HTTPException(404, "Store not found")
-    store_ob = float(getattr(store, "opening_balance", None) or 0)
-
-    all_rows = (
-        db.query(Entry)
-        .filter(Entry.store_id == store_id)
-        .order_by(Entry.date.asc(), Entry.id.asc())
-        .all()
-    )
-
-    total_outstanding = store_ob + sum(_entry_balance_due(e) for e in all_rows)
-
-    fd: date | None = None
-    td: date | None = None
-    if from_date and to_date:
-        try:
-            fd = datetime.strptime(from_date, "%Y-%m-%d").date()
-            td = datetime.strptime(to_date, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(400, "from_date and to_date must be YYYY-MM-DD")
-
-    prior_entries_due = 0.0
-    if fd is not None:
-        prior_entries_due = sum(_entry_balance_due(e) for e in all_rows if e.date < fd)
-    opening_balance = store_ob + prior_entries_due
-
-    if fd is not None and td is not None:
-        entries = [e for e in all_rows if fd <= e.date <= td]
-    else:
-        entries = list(all_rows)
-
-    result = []
-    running_balance = opening_balance
-
-    for e in entries:
-        if e.is_closed:
-            debit = 0.0
-            credit = 0.0
-            line_due = 0.0
-            cc = 0.0
-            cu = 0.0
-        else:
-            debit = float(e.total_amount or 0)
-            cc = float(e.collected_cash or 0)
-            cu = float(e.collected_upi or 0)
-            if cc == 0 and cu == 0:
-                amt = float(e.amount_collected or 0)
-                if amt > 0:
-                    pm = (e.payment_mode or "cash").lower()
-                    if pm == "upi":
-                        cu = amt
-                    else:
-                        cc = amt
-            credit = cc + cu
-            line_due = _entry_balance_due(e)
-
-        balance_before = round(running_balance, 2)
-        running_balance += line_due
-        balance_after = round(running_balance, 2)
-
-        result.append({
-            "id": e.id,
-            "date": e.date.strftime("%Y-%m-%d"),
-            "created_at": e.created_at.isoformat() if e.created_at else None,
-            "delivered": e.delivered,
-            "returned": e.returned,
-            "packets_sold": e.delivered,
-            "packets_returned": e.returned,
-            "debit": debit,
-            "credit": credit,
-            "bill_amount": round(debit, 2),
-            "amount_paid": round(credit, 2),
-            "collected": e.amount_collected,
-            "collected_cash": cc,
-            "collected_upi": cu,
-            "payment_mode": (e.payment_mode or "") or "—",
-            "payment_label": _payment_label(cc, cu),
-            "line_due": round(line_due, 2),
-            "balance": round(line_due, 2),
-            "balance_before": balance_before,
-            "balance_after": balance_after,
-            "running_balance": balance_after,
-            "is_closed": e.is_closed,
-        })
-
-    return {
-        "summary": {
-            "total_outstanding": round(total_outstanding, 2),
-            "opening_balance": round(opening_balance, 2),
-            "store_opening_balance": round(store_ob, 2),
-        },
-        "entries": result,
-    }
-    @app.get("/ledger/{store_id}/bill.pdf")
-    def ledger_bill_pdf(
+@app.get("/ledger/{store_id}/bill.pdf")
+def ledger_bill_pdf(
         store_id: int,
         from_date: str | None = Query(None),
         to_date: str | None = Query(None),
         db: Session = Depends(get_db),
-    ):
+):
         store = db.query(Store).filter(Store.id == store_id).first()
         if not store:
             raise HTTPException(404, "Store not found")
@@ -2339,6 +2232,113 @@ def ledger(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+@app.get("/ledger/{store_id}")
+def ledger(
+    store_id: int,
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Each row combines sales history (packets sold / returned) with money (bill, paid, running due).
+
+    **balance_before** = total owed before this visit line; **running_balance** = after (cumulative).
+    **line_due** = unpaid portion from this visit only. Returns are packet counts only (already in billing logic).
+    """
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(404, "Store not found")
+    store_ob = float(getattr(store, "opening_balance", None) or 0)
+
+    all_rows = (
+        db.query(Entry)
+        .filter(Entry.store_id == store_id)
+        .order_by(Entry.date.asc(), Entry.id.asc())
+        .all()
+    )
+
+    total_outstanding = store_ob + sum(_entry_balance_due(e) for e in all_rows)
+
+    fd: date | None = None
+    td: date | None = None
+    if from_date and to_date:
+        try:
+            fd = datetime.strptime(from_date, "%Y-%m-%d").date()
+            td = datetime.strptime(to_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "from_date and to_date must be YYYY-MM-DD")
+
+    prior_entries_due = 0.0
+    if fd is not None:
+        prior_entries_due = sum(_entry_balance_due(e) for e in all_rows if e.date < fd)
+    opening_balance = store_ob + prior_entries_due
+
+    if fd is not None and td is not None:
+        entries = [e for e in all_rows if fd <= e.date <= td]
+    else:
+        entries = list(all_rows)
+
+    result = []
+    running_balance = opening_balance
+
+    for e in entries:
+        if e.is_closed:
+            debit = 0.0
+            credit = 0.0
+            line_due = 0.0
+            cc = 0.0
+            cu = 0.0
+        else:
+            debit = float(e.total_amount or 0)
+            cc = float(e.collected_cash or 0)
+            cu = float(e.collected_upi or 0)
+            if cc == 0 and cu == 0:
+                amt = float(e.amount_collected or 0)
+                if amt > 0:
+                    pm = (e.payment_mode or "cash").lower()
+                    if pm == "upi":
+                        cu = amt
+                    else:
+                        cc = amt
+            credit = cc + cu
+            line_due = _entry_balance_due(e)
+
+        balance_before = round(running_balance, 2)
+        running_balance += line_due
+        balance_after = round(running_balance, 2)
+
+        result.append({
+            "id": e.id,
+            "date": e.date.strftime("%Y-%m-%d"),
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "delivered": e.delivered,
+            "returned": e.returned,
+            "packets_sold": e.delivered,
+            "packets_returned": e.returned,
+            "debit": debit,
+            "credit": credit,
+            "bill_amount": round(debit, 2),
+            "amount_paid": round(credit, 2),
+            "collected": e.amount_collected,
+            "collected_cash": cc,
+            "collected_upi": cu,
+            "payment_mode": (e.payment_mode or "") or "—",
+            "payment_label": _payment_label(cc, cu),
+            "line_due": round(line_due, 2),
+            "balance": round(line_due, 2),
+            "balance_before": balance_before,
+            "balance_after": balance_after,
+            "running_balance": balance_after,
+            "is_closed": e.is_closed,
+        })
+
+    return {
+        "summary": {
+            "total_outstanding": round(total_outstanding, 2),
+            "opening_balance": round(opening_balance, 2),
+            "store_opening_balance": round(store_ob, 2),
+        },
+        "entries": result,
+    }
 
 # ---------------- DASHBOARD ----------------
 @app.get("/admin/dashboard")
