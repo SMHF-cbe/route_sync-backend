@@ -2155,6 +2155,189 @@ def ledger(
         },
         "entries": result,
     }
+    @app.get("/ledger/{store_id}/bill.pdf")
+    def ledger_bill_pdf(
+        store_id: int,
+        from_date: str | None = Query(None),
+        to_date: str | None = Query(None),
+        db: Session = Depends(get_db),
+    ):
+        store = db.query(Store).filter(Store.id == store_id).first()
+        if not store:
+            raise HTTPException(404, "Store not found")
+    
+        payload = ledger(
+            store_id=store_id,
+            from_date=from_date,
+            to_date=to_date,
+            db=db,
+        )
+    
+        summary = payload.get("summary", {})
+        rows = payload.get("entries", [])
+    
+        route = db.query(Route).filter(Route.id == store.route_id).first()
+    
+        if from_date and to_date:
+            period_label = f"{from_date} to {to_date}"
+            file_period = f"{from_date}_to_{to_date}"
+        else:
+            period_label = "All history"
+            file_period = "all_history"
+    
+        store_name = store.name or f"Store {store_id}"
+        route_label = "Route"
+        if route:
+            if route.route_code is not None:
+                route_label = f"Route {route.route_code} - {route.name}"
+            else:
+                route_label = route.name
+    
+        total_sold = 0
+        total_returned = 0
+        total_bill = 0.0
+        total_paid = 0.0
+        total_due = 0.0
+    
+        for row in rows:
+            if row.get("is_closed"):
+                continue
+            total_sold += int(row.get("packets_sold") or row.get("delivered") or 0)
+            total_returned += int(row.get("packets_returned") or row.get("returned") or 0)
+            total_bill += float(row.get("bill_amount") or row.get("debit") or 0)
+            total_paid += float(row.get("amount_paid") or row.get("credit") or 0)
+            total_due += float(row.get("line_due") or row.get("balance") or 0)
+    
+        total_outstanding = float(summary.get("total_outstanding") or 0)
+        opening_balance = float(summary.get("opening_balance") or 0)
+    
+        pdf = FPDF()
+        pdf.add_page()
+    
+        pdf.set_font("Helvetica", "B", 15)
+        pdf.cell(0, 9, _pdf_cell_text("SRI MAHALAKSHMI HOME FOODS", 120), ln=True, align="C")
+    
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, _pdf_cell_text("Idli Dosa Batter Supplier", 120), ln=True, align="C")
+        pdf.cell(0, 6, _pdf_cell_text("Ledger Bill / Statement", 120), ln=True, align="C")
+    
+        pdf.ln(4)
+    
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 7, _pdf_cell_text(f"Store: {store_name}", 120), ln=True)
+    
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, _pdf_cell_text(f"Route: {route_label}", 120), ln=True)
+        pdf.cell(0, 6, _pdf_cell_text(f"Period: {period_label}", 120), ln=True)
+        pdf.cell(0, 6, _pdf_cell_text(f"Generated on: {_report_pdf_date(business_today())}", 120), ln=True)
+    
+        pdf.ln(3)
+    
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(47, 8, _pdf_cell_text("Opening Balance", 30), border=1)
+        pdf.cell(47, 8, _pdf_cell_text("Bill Amount", 30), border=1)
+        pdf.cell(47, 8, _pdf_cell_text("Paid", 30), border=1)
+        pdf.cell(47, 8, _pdf_cell_text("Outstanding", 30), border=1, ln=True)
+    
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(47, 8, _pdf_cell_text(f"{opening_balance:.2f}", 30), border=1)
+        pdf.cell(47, 8, _pdf_cell_text(f"{total_bill:.2f}", 30), border=1)
+        pdf.cell(47, 8, _pdf_cell_text(f"{total_paid:.2f}", 30), border=1)
+        pdf.cell(47, 8, _pdf_cell_text(f"{total_outstanding:.2f}", 30), border=1, ln=True)
+    
+        pdf.ln(5)
+    
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, _pdf_cell_text("Sales Summary", 120), ln=True)
+    
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, _pdf_cell_text(f"Total sold packets: {total_sold}", 120), ln=True)
+        pdf.cell(0, 6, _pdf_cell_text(f"Total returned packets: {total_returned}", 120), ln=True)
+        pdf.cell(0, 6, _pdf_cell_text(f"Total due from selected period: {total_due:.2f}", 120), ln=True)
+    
+        pdf.ln(4)
+    
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(24, 8, "Date", border=1)
+        pdf.cell(18, 8, "Sold", border=1)
+        pdf.cell(18, 8, "Ret", border=1)
+        pdf.cell(28, 8, "Bill", border=1)
+        pdf.cell(28, 8, "Paid", border=1)
+        pdf.cell(28, 8, "Due", border=1)
+        pdf.cell(34, 8, "Balance", border=1, ln=True)
+    
+        pdf.set_font("Helvetica", "", 8)
+    
+        if not rows:
+            pdf.cell(178, 8, _pdf_cell_text("No entries found for this period.", 120), border=1, ln=True)
+        else:
+            for row in rows:
+                if pdf.get_y() > 270:
+                    pdf.add_page()
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.cell(24, 8, "Date", border=1)
+                    pdf.cell(18, 8, "Sold", border=1)
+                    pdf.cell(18, 8, "Ret", border=1)
+                    pdf.cell(28, 8, "Bill", border=1)
+                    pdf.cell(28, 8, "Paid", border=1)
+                    pdf.cell(28, 8, "Due", border=1)
+                    pdf.cell(34, 8, "Balance", border=1, ln=True)
+                    pdf.set_font("Helvetica", "", 8)
+    
+                if row.get("is_closed"):
+                    pdf.cell(24, 8, _pdf_cell_text(row.get("date", ""), 20), border=1)
+                    pdf.cell(18, 8, "0", border=1)
+                    pdf.cell(18, 8, "0", border=1)
+                    pdf.cell(28, 8, "0.00", border=1)
+                    pdf.cell(28, 8, "0.00", border=1)
+                    pdf.cell(28, 8, "0.00", border=1)
+                    pdf.cell(34, 8, _pdf_cell_text(f"{float(row.get('balance_after') or 0):.2f}", 20), border=1, ln=True)
+                    continue
+    
+                sold = int(row.get("packets_sold") or row.get("delivered") or 0)
+                returned = int(row.get("packets_returned") or row.get("returned") or 0)
+                bill = float(row.get("bill_amount") or row.get("debit") or 0)
+                paid = float(row.get("amount_paid") or row.get("credit") or 0)
+                due = float(row.get("line_due") or row.get("balance") or 0)
+                bal_after = float(row.get("balance_after") or row.get("running_balance") or 0)
+    
+                pdf.cell(24, 8, _pdf_cell_text(row.get("date", ""), 20), border=1)
+                pdf.cell(18, 8, _pdf_cell_text(sold, 10), border=1)
+                pdf.cell(18, 8, _pdf_cell_text(returned, 10), border=1)
+                pdf.cell(28, 8, _pdf_cell_text(f"{bill:.2f}", 20), border=1)
+                pdf.cell(28, 8, _pdf_cell_text(f"{paid:.2f}", 20), border=1)
+                pdf.cell(28, 8, _pdf_cell_text(f"{due:.2f}", 20), border=1)
+                pdf.cell(34, 8, _pdf_cell_text(f"{bal_after:.2f}", 20), border=1, ln=True)
+    
+        pdf.ln(5)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, _pdf_cell_text(f"Final Outstanding: {total_outstanding:.2f}", 120), ln=True)
+    
+        pdf.set_font("Helvetica", "", 8)
+        pdf.ln(4)
+        pdf.multi_cell(
+            0,
+            5,
+            _pdf_cell_text(
+                "This is a computer-generated ledger statement from RouteSync for Sri Mahalakshmi Home Foods.",
+                180,
+            ),
+        )
+    
+        raw = pdf.output()
+        if isinstance(raw, str):
+            body: bytes = raw.encode("latin-1")
+        else:
+            body = bytes(raw)
+    
+        safe_store_name = re.sub(r"[^A-Za-z0-9_-]+", "_", store_name).strip("_")[:60] or f"store_{store_id}"
+        filename = f"SMHF_{safe_store_name}_{file_period}.pdf"
+    
+        return Response(
+            content=body,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
 
 # ---------------- DASHBOARD ----------------
