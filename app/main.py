@@ -278,7 +278,7 @@ class AdminSalesPredictionResponse(BaseModel):
 def admin_sales_prediction(
     request: Request,
     route_id: int | None = Query(None),
-    history_days: int = Query(365, ge=14, le=365),,
+    history_days: int = Query(365, ge=14, le=365),
     db: Session = Depends(get_db),
 ):
     _require_admin(request, None)
