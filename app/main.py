@@ -260,7 +260,6 @@ def _prediction_confidence(
         return "low"
     return "no_data"
 
-
 class AdminSalesPredictionResponse(BaseModel):
     prediction_date: date
     prediction_weekday: str
