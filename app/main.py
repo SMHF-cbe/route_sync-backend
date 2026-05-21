@@ -254,7 +254,7 @@ def _prediction_confidence(
 ) -> str:
     if same_weekday_count >= 4 and last_7_count >= 5:
         return "high"
-    if same_weekday_count >= 2 and last_7_count >= 3:
+    if same_weekday_count == 3 and last_7_count >= 3:
         return "medium"
     if same_weekday_count >= 1 or last_7_count >= 1 or last_day_total > 0:
         return "low"
@@ -279,7 +279,7 @@ class AdminSalesPredictionResponse(BaseModel):
 def admin_sales_prediction(
     request: Request,
     route_id: int | None = Query(None),
-    history_days: int = Query(90, ge=14, le=365),
+    history_days: int = Query(365, ge=14, le=365),,
     db: Session = Depends(get_db),
 ):
     _require_admin(request, None)
@@ -322,17 +322,51 @@ def admin_sales_prediction(
             last_available_date = available_dates[-1]
             last_day_total = int(daily_totals.get(last_available_date, 0) or 0)
 
-    weighted_prediction = (
-        0.5 * avg_same_weekday
-        + 0.3 * last_7_days_avg
-        + 0.2 * last_day_total
-    )
-
+    same_weekday_count = len(same_weekday_values)
+    last_7_count = len(last_7_values)
+    
+    # Use all available same-weekday values, but only trust them strongly
+    # when we have enough samples.
+    if same_weekday_count >= 4:
+        weighted_prediction = (
+            0.70 * avg_same_weekday
+            + 0.20 * last_7_days_avg
+            + 0.10 * last_day_total
+        )
+        formula_used = "0.70*avg_same_weekday_all_available + 0.20*last_7_days_avg + 0.10*last_day_total"
+    
+    elif same_weekday_count == 3:
+        weighted_prediction = (
+            0.55 * avg_same_weekday
+            + 0.30 * last_7_days_avg
+            + 0.15 * last_day_total
+        )
+        formula_used = "0.55*avg_same_weekday_3_samples + 0.30*last_7_days_avg + 0.15*last_day_total"
+    
+    elif same_weekday_count >= 1:
+        weighted_prediction = (
+            0.30 * avg_same_weekday
+            + 0.50 * last_7_days_avg
+            + 0.20 * last_day_total
+        )
+        formula_used = "0.30*avg_same_weekday_low_samples + 0.50*last_7_days_avg + 0.20*last_day_total"
+    
+    elif last_7_count >= 3:
+        weighted_prediction = (
+            0.75 * last_7_days_avg
+            + 0.25 * last_day_total
+        )
+        formula_used = "0.75*last_7_days_avg + 0.25*last_day_total"
+    
+    else:
+        weighted_prediction = last_day_total
+        formula_used = "last_day_total_fallback"
+    
     predicted_units = _safe_round_prediction(weighted_prediction)
-
+    
     confidence = _prediction_confidence(
-        same_weekday_count=len(same_weekday_values),
-        last_7_count=len(last_7_values),
+        same_weekday_count=same_weekday_count,
+        last_7_count=last_7_count,
         last_day_total=last_day_total,
     )
 
@@ -347,7 +381,7 @@ def admin_sales_prediction(
         "last_7_days_count": len(last_7_values),
         "last_day_total": last_day_total,
         "confidence": confidence,
-        "formula": "0.5*avg_same_weekday + 0.3*last_7_days_avg + 0.2*last_day_total",
+        "formula": formula_used,
     }
 
 
