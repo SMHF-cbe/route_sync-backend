@@ -259,6 +259,37 @@ def _prediction_confidence(
     if same_weekday_count >= 1 or last_7_count >= 1 or last_day_total > 0:
         return "low"
     return "no_data"
+    
+def _extract_lat_lng_from_location_url(location_url: str | None):
+    if not location_url:
+        return None, None
+
+    text = str(location_url).strip()
+    if not text:
+        return None, None
+
+    patterns = [
+        r"[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"place/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+
+        try:
+            lat = float(match.group(1))
+            lng = float(match.group(2))
+
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return lat, lng
+        except Exception:
+            pass
+
+    return None, None
 
 class AdminSalesPredictionResponse(BaseModel):
     prediction_date: date
@@ -1920,7 +1951,195 @@ def admin_report_range(
     td = _parse_ymd(to_date, "to_date")
     return _admin_report_range_payload(db, fd, td, route_id)
 
+@app.get("/admin/map/stores")
+def admin_map_stores(
+    request: Request,
+    from_date: str = Query(...),
+    to_date: str = Query(...),
+    route_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    _require_admin(request, None)
 
+    try:
+        start = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if end < start:
+        raise HTTPException(status_code=400, detail="to_date must be same or after from_date.")
+
+    routes_by_id = {r.id: r for r in db.query(Route).all()}
+
+    store_query = db.query(Store).filter(Store.is_active == True)
+
+    selected_route = None
+
+    if route_id is not None:
+        selected_route = db.query(Route).filter(Route.id == route_id).first()
+
+        if not selected_route:
+            raise HTTPException(status_code=404, detail="Route not found.")
+
+        store_query = store_query.filter(Store.route_id == route_id)
+
+    stores = (
+        store_query
+        .order_by(Store.sort_order.asc(), Store.name.asc())
+        .all()
+    )
+
+    store_ids = [s.id for s in stores]
+
+    entries = []
+
+    if store_ids:
+        entries = (
+            db.query(Entry)
+            .filter(
+                Entry.store_id.in_(store_ids),
+                Entry.date >= start,
+                Entry.date <= end,
+            )
+            .all()
+        )
+
+    totals_by_store = {}
+
+    for e in entries:
+        sid = e.store_id
+
+        if sid not in totals_by_store:
+            totals_by_store[sid] = {
+                "delivered": 0,
+                "returned": 0,
+                "bill_amount": 0.0,
+                "collected": 0.0,
+                "balance": 0.0,
+            }
+
+        totals_by_store[sid]["delivered"] += int(e.delivered or 0)
+        totals_by_store[sid]["returned"] += int(e.returned or 0)
+        totals_by_store[sid]["bill_amount"] += float(e.total_amount or 0)
+        totals_by_store[sid]["collected"] += float(e.amount_collected or 0)
+        totals_by_store[sid]["balance"] += float(e.balance or 0)
+
+    result = []
+
+    mapped_count = 0
+    missing_location_count = 0
+    strong_store_count = 0
+    risk_store_count = 0
+
+    total_delivered = 0
+    total_returned = 0
+    total_bill_amount = 0.0
+    total_collected = 0.0
+    total_balance = 0.0
+
+    for s in stores:
+        route = routes_by_id.get(s.route_id)
+
+        totals = totals_by_store.get(
+            s.id,
+            {
+                "delivered": 0,
+                "returned": 0,
+                "bill_amount": 0.0,
+                "collected": 0.0,
+                "balance": 0.0,
+            },
+        )
+
+        delivered = int(totals["delivered"])
+        returned = int(totals["returned"])
+        bill_amount = float(totals["bill_amount"])
+        collected = float(totals["collected"])
+        balance = float(totals["balance"])
+
+        lat, lng = _extract_lat_lng_from_location_url(s.location_url)
+
+        if lat is not None and lng is not None:
+            mapped_count += 1
+        else:
+            missing_location_count += 1
+
+        return_rate = (returned / delivered) if delivered > 0 else 0
+
+        if delivered >= 100:
+            sales_level = "high"
+            strong_store_count += 1
+        elif delivered >= 40:
+            sales_level = "medium"
+        elif delivered > 0:
+            sales_level = "low"
+        else:
+            sales_level = "inactive"
+
+        if balance >= 2000 or return_rate >= 0.25:
+            risk_level = "high"
+            risk_store_count += 1
+        elif balance >= 750 or return_rate >= 0.12:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        total_delivered += delivered
+        total_returned += returned
+        total_bill_amount += bill_amount
+        total_collected += collected
+        total_balance += balance
+
+        result.append(
+            {
+                "store_id": s.id,
+                "store_name": s.name,
+                "area": s.area,
+                "route_id": s.route_id,
+                "route_code": route.route_code if route else None,
+                "route_name": route.name if route else "",
+                "location_url": s.location_url,
+                "latitude": lat,
+                "longitude": lng,
+                "delivered": delivered,
+                "returned": returned,
+                "bill_amount": round(bill_amount, 2),
+                "collected": round(collected, 2),
+                "balance": round(balance, 2),
+                "return_rate": round(return_rate, 4),
+                "sales_level": sales_level,
+                "risk_level": risk_level,
+            }
+        )
+
+    return {
+        "from_date": start.isoformat(),
+        "to_date": end.isoformat(),
+        "route": (
+            {
+                "id": selected_route.id,
+                "route_code": selected_route.route_code,
+                "name": selected_route.name,
+            }
+            if selected_route
+            else None
+        ),
+        "summary": {
+            "total_stores": len(stores),
+            "mapped_stores": mapped_count,
+            "missing_location": missing_location_count,
+            "strong_stores": strong_store_count,
+            "risk_stores": risk_store_count,
+            "total_delivered": total_delivered,
+            "total_returned": total_returned,
+            "total_bill_amount": round(total_bill_amount, 2),
+            "total_collected": round(total_collected, 2),
+            "total_balance": round(total_balance, 2),
+        },
+        "stores": result,
+    }
+    
 @app.get("/admin/report/range/pdf")
 def admin_report_range_pdf(
     request: Request,
