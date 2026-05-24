@@ -2140,6 +2140,92 @@ def admin_map_stores(
         "stores": result,
     }
     
+class AdminLiveEntry(BaseModel):
+    id: int
+    created_at: datetime
+    route_name: str
+    store_name: str
+    delivered: int
+    returned: int
+    balance: float
+
+
+class AdminLiveResponse(BaseModel):
+    entries: list[AdminLiveEntry]
+
+
+@app.get(
+    "/admin/live",
+    response_model=AdminLiveResponse,
+)
+def admin_live_feed(
+    request: Request,
+    date: str | None = Query(None),
+    route_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    _require_admin(request, None)
+
+    target_date = (
+        datetime.strptime(date, "%Y-%m-%d").date()
+        if date
+        else business_today()
+    )
+
+    start_dt = datetime.combine(
+        target_date,
+        datetime.min.time(),
+    )
+
+    end_dt = datetime.combine(
+        target_date,
+        datetime.max.time(),
+    )
+
+    q = (
+        db.query(Entry)
+        .join(Store, Store.id == Entry.store_id)
+        .join(Route, Route.id == Entry.route_id)
+        .filter(
+            Entry.created_at >= start_dt,
+            Entry.created_at <= end_dt,
+        )
+    )
+
+    if route_id is not None:
+        q = q.filter(Entry.route_id == route_id)
+
+    entries = (
+        q.order_by(Entry.created_at.desc())
+        .all()
+    )
+
+    live_entries = []
+
+    for entry in entries:
+        live_entries.append(
+            AdminLiveEntry(
+                id=entry.id,
+                created_at=entry.created_at,
+                route_name=(
+                    entry.route.name
+                    if entry.route
+                    else "Unknown"
+                ),
+                store_name=(
+                    entry.store.name
+                    if entry.store
+                    else "Unknown"
+                ),
+                delivered=int(entry.delivered or 0),
+                returned=int(entry.returned or 0),
+                balance=float(entry.balance or 0),
+            )
+        )
+
+    return AdminLiveResponse(
+        entries=live_entries
+    )    
 @app.get("/admin/report/range/pdf")
 def admin_report_range_pdf(
     request: Request,
