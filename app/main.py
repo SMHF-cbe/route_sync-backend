@@ -485,6 +485,14 @@ class AdminRouteCreate(BaseModel):
     admin_secret: str | None = None
 
 
+class TransferStoresRequest(BaseModel):
+    store_ids: list[int]
+    target_route_id: int
+
+
+class TransferStoresResponse(BaseModel):
+    transferred_count: int
+    target_route_id: int
 def _route_name_conflict(db: Session, name: str, exclude_id: int | None = None) -> Route | None:
     """Return an existing route if another row already uses this name (case-insensitive)."""
     key = (name or "").strip().lower()
