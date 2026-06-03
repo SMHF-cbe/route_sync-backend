@@ -143,12 +143,12 @@ class Entry(Base):
 # -------------------------------------------------------------------
 
 
-class TransferStoresRequest(BaseModel):
+class TransferStoresRequest(Base):
     store_ids: list[int]
     target_route_id: int
 
 
-class TransferStoresResponse(BaseModel):
+class TransferStoresResponse(Base):
     transferred_count: int
     target_route_id: int
     
