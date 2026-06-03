@@ -142,6 +142,17 @@ class Entry(Base):
 # Entry Audit Log
 # -------------------------------------------------------------------
 
+
+class TransferStoresRequest(BaseModel):
+    store_ids: list[int]
+    target_route_id: int
+
+
+class TransferStoresResponse(BaseModel):
+    transferred_count: int
+    target_route_id: int
+    
+
 class EntryAuditLog(Base):
     __tablename__ = "entry_audit_log"
 
