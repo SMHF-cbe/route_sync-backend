@@ -142,17 +142,6 @@ class Entry(Base):
 # Entry Audit Log
 # -------------------------------------------------------------------
 
-
-class TransferStoresRequest(Base):
-    store_ids: list[int]
-    target_route_id: int
-
-
-class TransferStoresResponse(Base):
-    transferred_count: int
-    target_route_id: int
-    
-
 class EntryAuditLog(Base):
     __tablename__ = "entry_audit_log"
 
