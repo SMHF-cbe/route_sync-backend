@@ -749,6 +749,7 @@ class StoreCreate(BaseModel):
 
 class StoreUpdate(BaseModel):
     name: str | None = None
+    route_id: int | None = None
     is_active: bool | None = None
     photo_url: str | None = None
     location_url: str | None = None
