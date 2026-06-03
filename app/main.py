@@ -634,6 +634,51 @@ def admin_patch_route(
     return {"id": r.id, "route_code": r.route_code, "name": r.name}
 
 
+@app.post(
+    "/admin/routes/transfer-stores",
+    response_model=TransferStoresResponse,
+)
+def transfer_stores(
+    payload: TransferStoresRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _require_admin(request, None)
+
+    stores = (
+        db.query(Store)
+        .filter(Store.id.in_(payload.store_ids))
+        .all()
+    )
+
+    if not stores:
+        raise HTTPException(
+            status_code=404,
+            detail="No stores found",
+        )
+
+    route = (
+        db.query(Route)
+        .filter(Route.id == payload.target_route_id)
+        .first()
+    )
+
+    if not route:
+        raise HTTPException(
+            status_code=404,
+            detail="Route not found",
+        )
+
+    for store in stores:
+        store.route_id = payload.target_route_id
+
+    db.commit()
+
+    return TransferStoresResponse(
+        transferred_count=len(stores),
+        target_route_id=payload.target_route_id,
+    )
+
 @app.delete("/admin/routes/{route_id}")
 def admin_delete_route(route_id: int, request: Request, db: Session = Depends(get_db)):
     _require_admin(request, None)
