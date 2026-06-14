@@ -2413,6 +2413,179 @@ def admin_report_range_csv(
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="admin-range-report.csv"'},
     )    
+
+# Place this right alongside your existing /admin/report/range endpoints
+
+class ExecutiveInsightsSummary(BaseModel):
+    return_rate_pct: float
+    upi_vs_cash_ratio: float
+    collection_efficiency_pct: float
+    active_stores_count: int
+    volume_per_store_avg: float
+
+
+@app.get("/admin/report/range")
+def get_extended_range_report(
+    request: Request,
+    from_date: str,
+    to_date: str,
+    route_id: int | None = Query(None),
+    db: Session = Depends(get_db)
+):
+    _require_admin(request)
+    
+    # Run original aggregation fetch query across date limits
+    start_d = datetime.strptime(from_date, "%Y-%m-%d").date()
+    end_d = datetime.strptime(to_date, "%Y-%m-%d").date()
+    
+    entries = db.query(Entry).filter(Entry.date >= start_d, Entry.date <= end_d, Entry.is_closed == False)
+    if route_id:
+        entries = entries.filter(Entry.route_id == route_id)
+        
+    rows = entries.all()
+    
+    total_del = sum(e.delivered for e in rows) or 0
+    total_ret = sum(e.returned for e in rows) or 0
+    total_cash = sum(e.collected_cash for e in rows) or 0.0
+    total_upi = sum(e.collected_upi for e in rows) or 0.0
+    total_col = total_cash + total_upi
+    total_bal = sum(e.balance for e in rows) or 0.0
+    
+    # Calculate Custom Corporate Insights Variables
+    total_billed = total_col + total_bal
+    efficiency = round((total_col / total_billed * 100), 1) if total_billed > 0 else 100.0
+    return_rate = round((total_ret / total_del * 100), 1) if total_del > 0 else 0.0
+    
+    total_cash_upi = total_cash + total_upi
+    upi_ratio = round((total_upi / total_cash_upi * 100), 1) if total_cash_upi > 0 else 0.0
+    
+    distinct_stores = len({e.store_id for e in rows if e.store_id})
+    avg_volume = round((total_del / distinct_stores), 1) if distinct_stores > 0 else 0.0
+    
+    # Return matched objects
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "summary": {
+            "total_delivered": total_del,
+            "total_returns": total_ret,
+            "cash": total_cash,
+            "upi": total_upi,
+            "total_collected": total_col,
+            "total_balance": total_bal
+        },
+        "insights": {
+            "return_rate_pct": return_rate,
+            "upi_vs_cash_ratio": upi_ratio,
+            "collection_efficiency_pct": efficiency,
+            "active_stores_count": distinct_stores,
+            "volume_per_store_avg": avg_volume
+        },
+        "stores": [] # Populate with original mapping loop as needed
+    }
+
+
+@app.get("/admin/report/range/insights-pdf")
+def export_boardroom_insights_pdf(
+    request: Request,
+    from_date: str,
+    to_date: str,
+    route_id: int | None = Query(None),
+    db: Session = Depends(get_db)
+):
+    _require_admin(request)
+    
+    # Fetch data profile from core generator above
+    data = get_extended_range_report(request, from_date, to_date, route_id, db)
+    summary = data["summary"]
+    insights = data["insights"]
+    
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.add_page()
+    
+    # Design Corporate Midnight Header Theme Layout
+    pdf.set_fill_color(22, 24, 30)
+    pdf.rect(0, 0, 210, 52, 'F')
+    
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", style='B', size=22)
+    pdf.ln(8)
+    pdf.cell(190, 10, "  ROUTE_SYNC INTEL REPORT", ln=True)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.set_text_color(160, 170, 185)
+    pdf.cell(190, 6, f"   Timeframe: {from_date} to {to_date}   |   Generated: Live Dashboard Insight Engine", ln=True)
+    
+    pdf.ln(18)
+    pdf.set_text_color(30, 40, 55)
+    
+    # Section Heading: Executive Metrics Overview
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(190, 10, "1. Key Performance Indicators (KPIs)", ln=True)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(5)
+    
+    # Build Beautiful Insights Cards
+    pdf.set_font("Arial", size=11)
+    def add_kpi_bar(label, value_str, percentage, color_tuple):
+        pdf.set_text_color(50, 60, 75)
+        pdf.set_font("Arial", style='B', size=11)
+        pdf.cell(60, 8, label)
+        pdf.set_font("Arial", size=11)
+        pdf.cell(30, 8, value_str, ln=True)
+        
+        # Draw background track
+        current_y = pdf.get_y()
+        pdf.set_fill_color(240, 242, 245)
+        pdf.rect(10, current_y + 1, 120, 5, 'F')
+        
+        # Draw dynamic color metric bar
+        pdf.set_fill_color(*color_tuple)
+        bar_width = max(2, int(120 * (min(percentage, 100) / 100.0)))
+        pdf.rect(10, current_y + 1, bar_width, 5, 'F')
+        pdf.ln(9)
+
+    add_kpi_bar("Collection Efficiency:", f"{insights['collection_efficiency_pct']}%", insights['collection_efficiency_pct'], (0, 200, 100))
+    add_kpi_bar("Product Return Rate:", f"{insights['return_rate_pct']}%", insights['return_rate_pct'], (255, 140, 0))
+    add_kpi_bar("Digital Payment Share:", f"{insights['upi_vs_cash_ratio']}%", insights['upi_vs_cash_ratio'], (51, 181, 229))
+    
+    pdf.ln(5)
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(190, 10, "2. Operational Volume Aggregates", ln=True)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(6)
+    
+    # Detailed Data Grid Table Elements
+    pdf.set_font("Arial", size=11)
+    pdf.set_text_color(60, 70, 80)
+    
+    grid_items = [
+        ("Total Stock Volume Dispatched", str(summary["total_delivered"])),
+        ("Total Stock Units Returned", str(summary["total_returns"])),
+        ("Total Net Cash Collected", f"INR {summary['cash']:,}"),
+        ("Total Net UPI Collected", f"INR {summary['upi']:,}"),
+        ("Gross Capital Collected", f"INR {summary['total_collected']:,}"),
+        ("Outstanding Operational Balance Due", f"INR {summary['total_balance']:,}"),
+    ]
+    
+    for label, val in grid_items:
+        pdf.cell(110, 8, label, border="B")
+        pdf.cell(80, 8, val, border="B", ln=True, align="R")
+        
+    pdf.ln(15)
+    pdf.set_font("Arial", style='I', size=9)
+    pdf.set_text_color(140, 140, 140)
+    pdf.cell(190, 5, "* This report is generated automatically from real-time transaction updates.", align="C", ln=True)
+    
+    output = io.BytesIO()
+    pdf.output(output)
+    output.seek(0)
+    
+    return Response(
+        output.read(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=insights-{from_date}-to-{to_date}.pdf"}
+    )
 # ---------------- SNAPSHOT ----------------
 @app.get("/store/{store_id}/snapshot")
 def snapshot(store_id: int, db: Session = Depends(get_db)):
