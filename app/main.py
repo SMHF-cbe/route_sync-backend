@@ -2005,6 +2005,166 @@ def admin_report_range(
     td = _parse_ymd(to_date, "to_date")
     return _admin_report_range_payload(db, fd, td, route_id)
 
+@app.get("/admin/reports/master-pdf")
+def generate_master_report_pdf(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    db: Session = Depends(get_db),
+    x_admin_secret: str = Header(None)
+):
+    if not admin_secret_ok(x_admin_secret):
+        raise HTTPException(status_code=401, detail="Invalid admin secret")
+
+    try:
+        s_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        e_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format structure")
+
+    # Gather data boundaries
+    entries = db.query(Entry).filter(func.date(Entry.created_at).between(s_dt, e_dt)).all()
+    stores = {s.id: s for s in db.query(Store).all()}
+    routes = {r.id: r for r in db.query(Route).all()}
+
+    # Calculate Top-Level Aggregates
+    total_delivered = sum(e.delivered for e in entries)
+    total_returned = sum(e.returned for e in entries)
+    total_cash = sum(e.collected_cash for e in entries)
+    total_upi = sum(e.collected_upi for e in entries)
+    total_collected = total_cash + total_upi
+    total_balance = sum(e.balance for e in entries)
+
+    # Compile Route Breakdown Matrix
+    route_metrics = {}
+    for e in entries:
+        r_id = e.route_id
+        if r_id not in route_metrics:
+            r_name = routes[r_id].name if r_id in routes else f"Route {r_id}"
+            route_metrics[r_id] = {"name": r_name, "delivered": 0, "returned": 0, "collected": 0, "balance": 0}
+        route_metrics[r_id]["delivered"] += e.delivered
+        route_metrics[r_id]["returned"] += e.returned
+        route_metrics[r_id]["collected"] += (e.collected_cash + e.collected_upi)
+        route_metrics[r_id]["balance"] += e.balance
+
+    # Compile Store Financial Risk Ledger
+    store_balances = defaultdict(float)
+    for e in entries:
+        store_balances[e.store_id] += e.balance
+    
+    top_debtors = []
+    for sid, bal in store_balances.items():
+        if bal > 0:
+            s_name = stores[sid].name if sid in stores else f"Store {sid}"
+            top_debtors.append((s_name, bal))
+    top_debtors = sorted(top_debtors, key=lambda x: x[1], reverse=True)[:5]
+
+    # Initialize FPDF Layout Engine
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.add_page()
+    pdf.set_text_color(30, 41, 59) # Deep charcoal corporate text
+
+    # Document Header Title Block
+    pdf.set_font("Helvetica", style="B", size=22)
+    pdf.cell(0, 12, "ROUTE_SYNC OPERATIONAL INTELLIGENCE REPORT", ln=True, align="L")
+    pdf.set_font("Helvetica", style="", size=10)
+    pdf.set_text_color(100, 116, 139)
+    pdf.cell(0, 6, f"Execution Interval: {start_date} to {end_date} | Compiled: {datetime.now(_IST).strftime('%d-%m-%Y %I:%M %p')} IST", ln=True, align="L")
+    pdf.ln(6)
+
+    # Decorative Dividers
+    pdf.set_draw_color(226, 232, 240)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(6)
+
+    # Metric Blocks Layout
+    pdf.set_text_color(30, 41, 59)
+    pdf.set_font("Helvetica", style="B", size=12)
+    pdf.cell(0, 8, "EXECUTIVE LOGISTICS & CASH FLOW SUMMARY", ln=True)
+    pdf.ln(2)
+
+    # Render a Summary Grid Table
+    pdf.set_font("Helvetica", style="B", size=10)
+    pdf.set_fill_color(248, 250, 252) # Light slate table block
+    pdf.cell(45, 8, " Metric Parameter", border=1, fill=True)
+    pdf.cell(50, 8, " Operational Value", border=1, fill=True, ln=True)
+
+    pdf.set_font("Helvetica", size=10)
+    summary_data = [
+        ("Total Dispatched Units", f"{total_delivered} units"),
+        ("Total Returned Units", f"{total_returned} units"),
+        ("Cash Collected Ledger", f"INR {total_cash:,.2f}"),
+        ("UPI Collected Ledger", f"INR {total_upi:,.2f}"),
+        ("Total Aggregated Collections", f"INR {total_collected:,.2f}"),
+        ("Total Realized Pipeline Balance", f"INR {total_balance:,.2f}")
+    ]
+    for key, val in summary_data:
+        pdf.cell(45, 8, f" {key}", border=1)
+        pdf.cell(50, 8, f" {val}", border=1, ln=True)
+
+    pdf.ln(8)
+
+    # Route-Wise Breakdown Performance Table
+    pdf.set_font("Helvetica", style="B", size=12)
+    pdf.cell(0, 8, "ROUTE-WISE PERFORMANCE LEDGER", ln=True)
+    pdf.ln(2)
+
+    pdf.set_font("Helvetica", style="B", size=9)
+    pdf.set_fill_color(15, 23, 42) # Dark Slate Header Row
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(65, 8, " Route Designation Name", border=1, fill=True)
+    pdf.cell(30, 8, " Delivered", border=1, fill=True, align="C")
+    pdf.cell(30, 8, " Returned", border=1, fill=True, align="C")
+    pdf.cell(35, 8, " Collected (INR)", border=1, fill=True, align="C")
+    pdf.cell(30, 8, " Balance (INR)", border=1, fill=True, align="C", ln=True)
+
+    pdf.set_text_color(30, 41, 59)
+    pdf.set_font("Helvetica", size=9)
+    
+    for r_id, m in route_metrics.items():
+        pdf.cell(65, 8, f" {m['name']}", border=1)
+        pdf.cell(30, 8, str(m['delivered']), border=1, align="C")
+        pdf.cell(30, 8, str(m['returned']), border=1, align="C")
+        pdf.cell(35, 8, f"{m['collected']:,.2f}", border=1, align="R")
+        pdf.cell(30, 8, f"{m['balance']:,.2f}", border=1, align="R", ln=True)
+
+    pdf.ln(8)
+
+    # Risk Analysis Sub-section
+    pdf.set_font("Helvetica", style="B", size=12)
+    pdf.cell(0, 8, "CREDIT LEAKAGE & OUTSTANDING RISK ALERTS", ln=True)
+    pdf.ln(2)
+
+    if not top_debtors:
+        pdf.set_font("Helvetica", style="I", size=10)
+        pdf.cell(0, 8, "No outstanding financial balances detected across trading territories.", ln=True)
+    else:
+        pdf.set_font("Helvetica", style="B", size=9)
+        pdf.set_fill_color(254, 242, 242) # Crimson alert tint
+        pdf.set_text_color(153, 27, 27)
+        pdf.cell(100, 8, " Store Client Account", border=1, fill=True)
+        pdf.cell(50, 8, " Deficit Balance Owed", border=1, fill=True, ln=True)
+        
+        pdf.set_font("Helvetica", size=9)
+        pdf.set_text_color(30, 41, 59)
+        for s_name, bal in top_debtors:
+            pdf.cell(100, 8, f" {s_name}", border=1)
+            pdf.cell(50, 8, f" INR {bal:,.2f}", border=1, ln=True)
+
+    # Output Binary Stream Delivery
+    pdf_output = pdf.output(dest='S')
+    if isinstance(pdf_output, str):
+        pdf_output = pdf_output.encode('latin1')
+
+    return Response(
+        content=pdf_output,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=Master_Report_{start_date}_{end_date}.pdf"
+        }
+    )
+except Exception as err:
+    raise HTTPException(status_code=500, detail=f"PDF Synthesis Failure Engine Error: {str(err)}")
+
 @app.get("/admin/map/stores")
 def admin_map_stores(
     request: Request,
