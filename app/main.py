@@ -2208,78 +2208,60 @@ class AdminLiveResponse(BaseModel):
     entries: list[AdminLiveEntry]
 
 
-@app.get(
-    "/admin/live",
-    response_model=AdminLiveResponse,
-)
-def admin_live_feed(
-    request: Request,
-    date: str | None = Query(None),
-    route_id: int | None = Query(None),
+@app.get("/admin/live")
+def get_admin_live(
+    date: str = Query(None),
     db: Session = Depends(get_db),
+    x_admin_secret: str = Header(None)
 ):
-    _require_admin(request, None)
+    # 1. Authenticate with your existing secret validator
+    if not admin_secret_ok(x_admin_secret):
+        raise HTTPException(status_code=401, detail="Invalid admin secret")
 
-    target_date = (
-        datetime.strptime(date, "%Y-%m-%d").date()
-        if date
-        else business_today()
-    )
+    # 2. Parse target date or fallback to business local today (IST)
+    if not date:
+        target_date = business_today()
+    else:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = business_today()
 
-    start_dt = datetime.combine(
-        target_date,
-        datetime.min.time(),
-    )
+    # 3. Highly optimized join query to fetch today's operations feed in real-time
+    query_results = db.query(
+        Entry.id,
+        Entry.created_at,
+        Entry.delivered,
+        Entry.returned,
+        Entry.balance,
+        Store.name.label("store_name"),
+        Route.name.label("route_name")
+    ).join(
+        Store, Entry.store_id == Store.id
+    ).join(
+        Route, Entry.route_id == Route.id
+    ).filter(
+        func.date(Entry.created_at) == target_date
+    ).order_by(
+        Entry.created_at.desc()
+    ).all()
 
-    end_dt = datetime.combine(
-        target_date,
-        datetime.max.time(),
-    )
+    # 4. Map directly to the TypeScript LiveEntry structural definition
+    live_entries = [
+        {
+            "id": row.id,
+            "created_at": row.created_at.isoformat() if row.created_at else "",
+            "route_name": row.route_name,
+            "store_name": row.store_name,
+            "delivered": row.delivered,
+            "returned": row.returned,
+            "balance": float(row.balance)
+        }
+        for row in query_results
+    ]
 
-    q = (
-        db.query(Entry)
-        .join(Store, Store.id == Entry.store_id)
-        .join(Route, Route.id == Entry.route_id)
-        .filter(
-            Entry.created_at >= start_dt,
-            Entry.created_at <= end_dt,
-        )
-    )
-
-    if route_id is not None:
-        q = q.filter(Entry.route_id == route_id)
-
-    entries = (
-        q.order_by(Entry.created_at.desc())
-        .all()
-    )
-
-    live_entries = []
-
-    for entry in entries:
-        live_entries.append(
-            AdminLiveEntry(
-                id=entry.id,
-                created_at=entry.created_at,
-                route_name=(
-                    entry.route.name
-                    if entry.route
-                    else "Unknown"
-                ),
-                store_name=(
-                    entry.store.name
-                    if entry.store
-                    else "Unknown"
-                ),
-                delivered=int(entry.delivered or 0),
-                returned=int(entry.returned or 0),
-                balance=float(entry.balance or 0),
-            )
-        )
-
-    return AdminLiveResponse(
-        entries=live_entries
-    )    
+    return {"entries": live_entries}
+    
 @app.get("/admin/report/range/pdf")
 def admin_report_range_pdf(
     request: Request,
