@@ -2328,6 +2328,7 @@ def admin_report_range_pdf(
     pdf.cell(30, 8, _pdf_cell_text(f'{float(summary["total_collected"]):.2f}'), border=1)
     pdf.cell(30, 8, _pdf_cell_text(f'{float(summary["total_balance"]):.2f}'), border=1, ln=True)
 
+    # Cleaned output generation
     raw = pdf.output()
     body = raw.encode("latin-1") if isinstance(raw, str) else bytes(raw)
     return Response(
@@ -2335,8 +2336,6 @@ def admin_report_range_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="admin-range-report.pdf"'},
     )
-
-
 @app.get("/admin/report/range/csv")
 def admin_report_range_csv(
     request: Request,
