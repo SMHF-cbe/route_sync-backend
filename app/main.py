@@ -2220,6 +2220,7 @@ def get_admin_live(
         Entry.created_at,
         Entry.delivered,
         Entry.returned,
+        Entry.collected,
         Entry.balance,
         Store.name.label("store_name"),
         Route.name.label("route_name")
@@ -2242,6 +2243,7 @@ def get_admin_live(
             "store_name": row.store_name,
             "delivered": row.delivered,
             "returned": row.returned,
+            "paid": float(row.collected),
             "balance": float(row.balance)
         }
         for row in query_results
