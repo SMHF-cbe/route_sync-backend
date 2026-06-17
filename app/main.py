@@ -211,8 +211,7 @@ def _next_business_date(base: date | None = None) -> date:
 
 
 def _entry_net_units(e: Entry) -> int:
-    return int(e.delivered or 0) - int(e.returned or 0)
-
+    return int(e.delivered or 0)
 
 def _safe_round_prediction(value: float) -> int:
     return max(0, int(round(float(value or 0))))
