@@ -303,7 +303,6 @@ class AdminSalesPredictionResponse(BaseModel):
     confidence: str
     formula: str
 
-
 @app.get("/admin/prediction/sales", response_model=AdminSalesPredictionResponse)
 def admin_sales_prediction(
     request: Request,
@@ -413,7 +412,157 @@ def admin_sales_prediction(
         "formula": formula_used,
     }
 
+@app.get(
+    "/admin/return-prediction",
+    response_model=AdminReturnPredictionResponse,
+)
+def admin_return_prediction(
+    request: Request,
+    route_id: int | None = Query(None),
+    history_days: int = Query(365, ge=14, le=365),
+    db: Session = Depends(get_db),
+):
+    _require_admin(request, None)
 
+    target_date = business_today() + timedelta(days=1)
+
+    query = db.query(Entry)
+
+    if route_id is not None:
+        query = query.filter(
+            Entry.route_id == route_id
+        )
+
+    entries = query.all()
+
+    if not entries:
+        return AdminReturnPredictionResponse(
+            predicted_returns=0,
+            confidence="low",
+            target_date=target_date,
+            route_id=route_id,
+            diagnostics={},
+        )
+
+    daily_totals: dict[date, int] = {}
+
+    for entry in entries:
+        if not entry.date:
+            continue
+
+        daily_totals[entry.date] = (
+            daily_totals.get(entry.date, 0)
+            + int(entry.returned or 0)
+        )
+
+    available_dates = sorted(daily_totals.keys())
+
+    if not available_dates:
+        return AdminReturnPredictionResponse(
+            predicted_returns=0,
+            confidence="low",
+            target_date=target_date,
+            route_id=route_id,
+            diagnostics={},
+        )
+
+    target_weekday = target_date.weekday()
+
+    same_weekday_values = [
+        total
+        for d, total in daily_totals.items()
+        if d.weekday() == target_weekday
+    ]
+
+    last_7_values = [
+        daily_totals[d]
+        for d in available_dates[-7:]
+    ]
+
+    avg_same_weekday = (
+        sum(same_weekday_values) / len(same_weekday_values)
+        if same_weekday_values
+        else 0
+    )
+
+    last_7_days_avg = (
+        sum(last_7_values) / len(last_7_values)
+        if last_7_values
+        else 0
+    )
+
+    last_day_total = int(
+        daily_totals.get(
+            available_dates[-1],
+            0,
+        )
+    )
+
+    same_weekday_count = len(same_weekday_values)
+    last_7_count = len(last_7_values)
+
+    if same_weekday_count >= 4:
+        weighted_prediction = (
+            0.70 * avg_same_weekday
+            + 0.20 * last_7_days_avg
+            + 0.10 * last_day_total
+        )
+        formula_used = (
+            "0.70*avg_same_weekday + "
+            "0.20*last_7_days_avg + "
+            "0.10*last_day_returns"
+        )
+
+    elif same_weekday_count >= 2:
+        weighted_prediction = (
+            0.55 * avg_same_weekday
+            + 0.30 * last_7_days_avg
+            + 0.15 * last_day_total
+        )
+        formula_used = (
+            "0.55*avg_same_weekday + "
+            "0.30*last_7_days_avg + "
+            "0.15*last_day_returns"
+        )
+
+    else:
+        weighted_prediction = (
+            0.75 * last_7_days_avg
+            + 0.25 * last_day_total
+        )
+        formula_used = (
+            "0.75*last_7_days_avg + "
+            "0.25*last_day_returns"
+        )
+
+    predicted_returns = _safe_round_return_prediction(
+        weighted_prediction
+    )
+
+    confidence = _prediction_confidence(
+        same_weekday_count=same_weekday_count,
+        last_7_count=last_7_count,
+        last_day_total=last_day_total,
+    )
+
+    return AdminReturnPredictionResponse(
+        predicted_returns=predicted_returns,
+        confidence=confidence,
+        target_date=target_date,
+        route_id=route_id,
+        diagnostics={
+            "same_weekday_avg": round(
+                avg_same_weekday,
+                2,
+            ),
+            "last_7_days_avg": round(
+                last_7_days_avg,
+                2,
+            ),
+            "last_day_returns": last_day_total,
+            "formula": formula_used,
+        },
+    )
 # ---------------- EDIT WINDOW & AUDIT ----------------
 
 _EDIT_WINDOW_MINUTES = 15
