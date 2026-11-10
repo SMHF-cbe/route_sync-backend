@@ -8,6 +8,7 @@ import uuid
 import csv
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -267,15 +268,32 @@ def _extract_lat_lng_from_location_url(location_url: str | None):
     if not text:
         return None, None
 
+    decoded = unquote(text)
+
+    # Google Maps commonly stores coordinates in q, query, destination,
+    # or center query parameters. parse_qs handles encoded commas safely.
+    try:
+        query_values = parse_qs(urlparse(text).query)
+        for key in ("q", "query", "destination", "center"):
+            for value in query_values.get(key, []):
+                match = re.search(r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)", unquote(value))
+                if match:
+                    lat = float(match.group(1))
+                    lng = float(match.group(2))
+                    if -90 <= lat <= 90 and -180 <= lng <= 180:
+                        return lat, lng
+    except Exception:
+        pass
+
     patterns = [
-        r"[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)",
         r"/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
-        r"place/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"(?:place|search)/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
         r"(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, text)
+        match = re.search(pattern, decoded)
         if not match:
             continue
 
