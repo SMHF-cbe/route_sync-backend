@@ -917,6 +917,7 @@ class StoreReorderItem(BaseModel):
 
 
 class StoreReorderBody(BaseModel):
+    route_id: int
     stores: list[StoreReorderItem]
 
 
@@ -1036,6 +1037,7 @@ def get_stores(
     for s in stores:
         store_ob = float(getattr(s, "opening_balance", None) or 0)
         outstanding = store_ob + sum(_entry_balance_due(e) for e in entries_by_store[s.id])
+        latitude, longitude = _extract_lat_lng_from_location_url(s.location_url)
 
         result.append({
             "id": s.id,
@@ -1045,6 +1047,8 @@ def get_stores(
             "is_active": True if s.is_active is None else bool(s.is_active),
             "outstanding": round(outstanding, 2),
             "sort_order": int(getattr(s, "sort_order", 0) or 0),
+            "latitude": latitude,
+            "longitude": longitude,
         })
 
     return result
@@ -1057,6 +1061,19 @@ def patch_store(store_id: int, body: StoreUpdate, db: Session = Depends(get_db))
         raise HTTPException(404, "Store not found")
 
     data = body.model_dump(exclude_unset=True)
+    if "route_id" in data and data["route_id"] is not None:
+        target_route_id = int(data["route_id"])
+        target_route = db.query(Route).filter(Route.id == target_route_id).first()
+        if not target_route:
+            raise HTTPException(404, "Target route not found")
+        if int(s.route_id or 0) != target_route_id:
+            max_sort = (
+                db.query(func.max(Store.sort_order))
+                .filter(Store.route_id == target_route_id)
+                .scalar()
+            )
+            data["sort_order"] = int(max_sort or 0) + 1
+        data["route_id"] = target_route_id
     if "name" in data and data["name"] is not None:
         nm = str(data["name"]).strip()
         if not nm:
@@ -1110,15 +1127,22 @@ def admin_reorder_stores(
         return {"ok": True, "updated": 0}
 
     ids = [int(item.id) for item in body.stores]
-    rows = db.query(Store).filter(Store.id.in_(ids)).all()
+    if len(ids) != len(set(ids)):
+        raise HTTPException(400, "Store IDs must not be repeated")
+
+    rows = db.query(Store).filter(Store.route_id == body.route_id).all()
+    route_ids = {int(s.id) for s in rows}
+    if set(ids) != route_ids:
+        raise HTTPException(400, "Reorder must include every store on the selected route exactly once")
+
     store_map = {int(s.id): s for s in rows}
 
     updated = 0
-    for item in body.stores:
+    for index, item in enumerate(body.stores):
         s = store_map.get(int(item.id))
-        if not s:
-            continue
-        s.sort_order = int(item.sort_order)
+        if s is None:
+            raise HTTPException(400, "Store does not belong to the selected route")
+        s.sort_order = index
         updated += 1
 
     db.commit()
