@@ -1053,6 +1053,47 @@ def get_stores(
 
     return result
 
+@app.get("/staff/map/stores/{route_id}")
+def staff_map_stores(
+    route_id: int,
+    include_inactive: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """Return route stores with coordinates for the password-authenticated staff map."""
+    today = business_today()
+
+    query = db.query(Store).filter(Store.route_id == route_id)
+    if not include_inactive:
+        query = query.filter(or_(Store.is_active == True, Store.is_active.is_(None)))
+    stores = query.order_by(Store.sort_order.asc(), Store.id.asc()).all()
+
+    store_ids = [s.id for s in stores]
+    entered_today_ids: set[int] = set()
+    if store_ids:
+        for (sid,) in (
+            db.query(Entry.store_id)
+            .filter(Entry.date == today, Entry.store_id.in_(store_ids))
+            .distinct()
+        ):
+            entered_today_ids.add(sid)
+
+    result = []
+    for s in stores:
+        latitude, longitude = _extract_lat_lng_from_location_url(s.location_url)
+        result.append(
+            {
+                "id": s.id,
+                "name": s.name,
+                "is_active": True if s.is_active is None else bool(s.is_active),
+                "entered_today": s.id in entered_today_ids,
+                "sort_order": int(getattr(s, "sort_order", 0) or 0),
+                "location_url": s.location_url,
+                "latitude": latitude,
+                "longitude": longitude,
+            }
+        )
+
+    return result
 
 @app.patch("/store/{store_id}")
 def patch_store(store_id: int, body: StoreUpdate, db: Session = Depends(get_db)):
