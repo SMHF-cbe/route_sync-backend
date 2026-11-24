@@ -4,6 +4,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 psycopg2-binary
+psycopg[binary]>=3.2,<4
 pandas
 openpyxl
 pydantic
