@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shutil
 import uuid
 import csv
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
 from collections import defaultdict
 from pathlib import Path
 
@@ -1107,6 +1111,71 @@ def staff_map_stores(
         )
 
     return result
+
+
+@app.get("/staff/map/route/{route_id}")
+def staff_map_route(
+    route_id: int,
+    start_lat: float | None = Query(None),
+    start_lng: float | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Return road geometry for active stores in their saved sort order."""
+    if (start_lat is None) != (start_lng is None):
+        raise HTTPException(400, "start_lat and start_lng must be supplied together")
+    if start_lat is not None and not (-90 <= start_lat <= 90 and -180 <= start_lng <= 180):
+        raise HTTPException(400, "Invalid staff location")
+
+    stores = (
+        db.query(Store)
+        .filter(Store.route_id == route_id)
+        .filter(or_(Store.is_active == True, Store.is_active.is_(None)))
+        .order_by(Store.sort_order.asc(), Store.id.asc())
+        .all()
+    )
+
+    waypoints: list[tuple[float, float]] = []
+    if start_lat is not None and start_lng is not None:
+        waypoints.append((float(start_lat), float(start_lng)))
+    store_ids: list[int] = []
+    for store in stores:
+        latitude, longitude = _extract_lat_lng_from_location_url(store.location_url)
+        if latitude is None or longitude is None:
+            continue
+        waypoints.append((float(latitude), float(longitude)))
+        store_ids.append(store.id)
+
+    if len(waypoints) < 2:
+        return {
+            "coordinates": [[lat, lng] for lat, lng in waypoints],
+            "road_route": False,
+            "store_ids": store_ids,
+            "message": "At least two mapped active points are required.",
+        }
+
+    # OSRM expects longitude,latitude; Leaflet receives latitude,longitude.
+    coordinate_text = ";".join(f"{lng:.7f},{lat:.7f}" for lat, lng in waypoints)
+    query = urlencode({"overview": "full", "geometries": "geojson", "steps": "false"})
+    url = f"https://router.project-osrm.org/route/v1/driving/{coordinate_text}?{query}"
+    try:
+        request = UrlRequest(url, headers={"User-Agent": "RouteSync staff map/1.0"}, method="GET")
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+        raise HTTPException(502, f"Road routing service unavailable: {exc}") from exc
+
+    if payload.get("code") != "Ok" or not payload.get("routes"):
+        raise HTTPException(502, "Road routing service could not calculate this route")
+    route = payload["routes"][0]
+    raw_coordinates = (route.get("geometry") or {}).get("coordinates") or []
+    coordinates = [[float(lat), float(lng)] for lng, lat in raw_coordinates]
+    return {
+        "coordinates": coordinates,
+        "road_route": True,
+        "store_ids": store_ids,
+        "distance_meters": round(float(route.get("distance", 0)), 1),
+        "duration_seconds": round(float(route.get("duration", 0)), 1),
+    }
 
 @app.patch("/store/{store_id}")
 def patch_store(store_id: int, body: StoreUpdate, db: Session = Depends(get_db)):
